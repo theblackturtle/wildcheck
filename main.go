@@ -34,20 +34,27 @@ var DefaultResolvers = []string{
 
 func main() {
 	var (
-		inputFile    string
+		input        string
 		threads      int
 		publicDNS    bool
 		resolverList string
 	)
-	flag.StringVar(&inputFile, "i", "", "Subdomains list")
+	flag.StringVar(&input, "i", "-", "Subdomains list. Default is stdin")
 	flag.IntVar(&threads, "t", 10, "Threads to use")
-	flag.BoolVar(&publicDNS, "p", false, "Use public-dns")
+	flag.BoolVar(&publicDNS, "p", false, "Get resolvers from Public-DNS")
 	flag.StringVar(&resolverList, "r", "", "Your resolvers list")
 	flag.Parse()
 
-	if inputFile == "" {
-		fmt.Println("Please check your input file.")
-		os.Exit(1)
+	var subsFile *os.File
+	if input == "-" {
+		subsFile = os.Stdin
+	} else {
+		subsFile, err := os.Open(input)
+		if err != nil {
+			fmt.Println("Please check your input file.")
+			os.Exit(1)
+		}
+		defer subsFile.Close()
 	}
 
 	var resolvers []string
@@ -85,7 +92,7 @@ func main() {
 		fmt.Println("Failed to init pool")
 		os.Exit(1)
 	}
-	fmt.Printf("Total working resolver: %d\n", len(resolverPool.Resolvers))
+	fmt.Fprintf(os.Stderr,"Total working resolvers: %d\n", len(resolverPool.Resolvers))
 
 	var wg sync.WaitGroup
 	jobChan := make(chan *requests.DNSRequest, threads)
@@ -106,13 +113,8 @@ func main() {
 		}()
 	}
 
-	f, err := os.Open(inputFile)
-	if err != nil {
-		panic(err)
-	}
-
 	var domainList []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(subsFile)
 	for sc.Scan() {
 		var mainDomain string
 		line := strings.TrimSpace(sc.Text())
@@ -128,7 +130,7 @@ func main() {
 
 		// Extract main domain from sub domain
 		if mainDomain == "" {
-			mainDomain, err = publicsuffix.EffectiveTLDPlusOne(subDomain)
+			mainDomain, err := publicsuffix.EffectiveTLDPlusOne(subDomain)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to get main domain from %s subdomain\n", subDomain)
 				continue
@@ -175,7 +177,6 @@ func getPublicDNS() []string {
 	}
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
-		// Get the next word in the list
 		line := strings.TrimSpace(sc.Text())
 		if err := sc.Err(); err == nil && line != "" {
 			resolversList = append(resolversList, line)
@@ -198,7 +199,7 @@ func getCountryCode(client *http.Client) string {
 	if err != nil {
 		return ""
 	}
-	// Extract the country code from the REST API results
+
 	var ipinfo struct {
 		CountryCode string `json:"country"`
 	}

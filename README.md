@@ -10,12 +10,26 @@ A simple tool to detect wildcards domain based on Amass's wildcards detector.
 
 ## Usage
 ```
-Usage of ./wildcheck:
+Usage of wildcheck:
   -i string
-        Subdomains list
-  -p    Use public-dns
+        Subdomains list. Default is stdin (default "-")
+  -p    Get resolvers from Public-DNS
   -r string
         Your resolvers list
   -t int
         Threads to use (default 10)
+```
+
+## Example commands
+#### Input from Stdin
+```
+cat subdomains.lst | wildcheck -t 100
+```
+#### Input from file
+```
+wildcheck -i subdomains.lst -t 100
+```
+#### Get resolvers from resolvers file and Public-DNS
+```
+wildcheck -i subdomains.lst -r resolvers.txt -p -t 100
 ```
