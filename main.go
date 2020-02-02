@@ -45,9 +45,10 @@ func main() {
 	flag.StringVar(&resolverList, "r", "", "Your resolvers list")
 	flag.Parse()
 
-	var subsFile *os.File
+	var sc *bufio.Scanner
+
 	if input == "-" {
-		subsFile = os.Stdin
+		sc = bufio.NewScanner(os.Stdin)
 	} else {
 		subsFile, err := os.Open(input)
 		if err != nil {
@@ -55,6 +56,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer subsFile.Close()
+		sc = bufio.NewScanner(subsFile)
 	}
 
 	var resolvers []string
@@ -92,7 +94,7 @@ func main() {
 		fmt.Println("Failed to init pool")
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr,"Total working resolvers: %d\n", len(resolverPool.Resolvers))
+	fmt.Fprintf(os.Stderr, "Total working resolvers: %d\n", len(resolverPool.Resolvers))
 
 	var wg sync.WaitGroup
 	jobChan := make(chan *requests.DNSRequest, threads)
@@ -114,7 +116,6 @@ func main() {
 	}
 
 	var domainList []string
-	sc := bufio.NewScanner(subsFile)
 	for sc.Scan() {
 		var mainDomain string
 		line := strings.TrimSpace(sc.Text())
