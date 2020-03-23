@@ -19,7 +19,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-const AUTHOR = `@theblackturtle - Twitter: twitter.com/thebl4ckturtle`
+const AUTHOR = `@thebl4ckturtle - https://github.com/theblackturtle/`
 
 var DefaultResolvers = []string{
 	"1.1.1.1:53",     // Cloudflare
@@ -46,7 +46,10 @@ func main() {
 	flag.Parse()
 
 	var sc *bufio.Scanner
-
+	if input == ""{
+		fmt.Fprintln(os.Stderr, "Check your input again")
+		os.Exit(1)
+	}
 	if input == "-" {
 		sc = bufio.NewScanner(os.Stdin)
 	} else {
@@ -89,7 +92,7 @@ func main() {
 		resolvers = DefaultResolvers
 	}
 
-	resolverPool := amassresolvers.SetupResolverPool(resolvers, false, false, nil)
+	resolverPool := amassresolvers.SetupResolverPool(resolvers, false, nil)
 	if resolverPool == nil {
 		fmt.Println("Failed to init pool")
 		os.Exit(1)
