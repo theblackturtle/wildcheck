@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -38,15 +39,19 @@ func main() {
 		threads      int
 		publicDNS    bool
 		resolverList string
+		rateMonitor  bool
+		verbose      bool
 	)
 	flag.StringVar(&input, "i", "-", "Subdomains list. Default is stdin")
 	flag.IntVar(&threads, "t", 10, "Threads to use")
 	flag.BoolVar(&publicDNS, "p", false, "Get resolvers from Public-DNS")
 	flag.StringVar(&resolverList, "r", "", "Your resolvers list")
+	flag.BoolVar(&rateMonitor, "m", false, "Enable rate monitor")
+	flag.BoolVar(&verbose, "v", false, "Enable verbose")
 	flag.Parse()
 
 	var sc *bufio.Scanner
-	if input == ""{
+	if input == "" {
 		fmt.Fprintln(os.Stderr, "Check your input again")
 		os.Exit(1)
 	}
@@ -92,7 +97,7 @@ func main() {
 		resolvers = DefaultResolvers
 	}
 
-	resolverPool := amassresolvers.SetupResolverPool(resolvers, false, nil)
+	resolverPool := amassresolvers.SetupResolverPool(resolvers, rateMonitor, nil)
 	if resolverPool == nil {
 		fmt.Println("Failed to init pool")
 		os.Exit(1)
@@ -110,9 +115,11 @@ func main() {
 			defer wg.Done()
 			for req := range jobChan {
 				if !resolverPool.MatchesWildcard(ctx, req) {
-					fmt.Printf("[non-wildcard] - %s\n", req.Name)
+					fmt.Println(req.Name)
 				} else {
-					fmt.Printf("[wildcard] - %s\n", req.Name)
+					if verbose {
+						fmt.Printf("[nonwild] %s\n", req.Name)
+					}
 				}
 			}
 		}()
@@ -122,6 +129,13 @@ func main() {
 	for sc.Scan() {
 		var mainDomain string
 		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "http") {
+			u, err := url.Parse(line)
+			if err != nil {
+				continue
+			}
+			line = u.Hostname()
+		}
 		subDomain := strings.ToLower(dns.RemoveAsteriskLabel(line))
 		subDomain = strings.Trim(subDomain, ".")
 
@@ -141,23 +155,15 @@ func main() {
 			}
 			domainList = append(domainList, mainDomain)
 		}
-		for _, sub := range getSubs(mainDomain, subDomain) {
-			jobChan <- &requests.DNSRequest{
-				Name:   sub,
-				Domain: mainDomain,
-			}
+
+		jobChan <- &requests.DNSRequest{
+			Name:   subDomain,
+			Domain: mainDomain,
 		}
 
 	}
 	close(jobChan)
 	wg.Wait()
-}
-
-func getSubs(mainDomain string, subdomain string) []string {
-	var subsList []string
-	subRe := dns.SubdomainRegex(mainDomain)
-	subsList = append(subsList, subRe.FindAllString(subdomain, -1)...)
-	return subsList
 }
 
 func getPublicDNS() []string {
