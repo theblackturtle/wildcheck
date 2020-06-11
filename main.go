@@ -118,7 +118,7 @@ func main() {
 					fmt.Println(req.Name)
 				} else {
 					if verbose {
-						fmt.Printf("[nonwild] %s\n", req.Name)
+						fmt.Printf("[wild] %s\n", req.Name)
 					}
 				}
 			}
@@ -150,7 +150,7 @@ func main() {
 		if mainDomain == "" {
 			mainDomain, err := publicsuffix.EffectiveTLDPlusOne(subDomain)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to get main domain from %s subdomain\n", subDomain)
+				fmt.Fprintf(os.Stderr, "Failed to get main domain from %s\n", subDomain)
 				continue
 			}
 			domainList = append(domainList, mainDomain)
