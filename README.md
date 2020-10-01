@@ -1,6 +1,11 @@
 # wildcheck
 A simple tool to detect wildcards domain based on Amass's wildcards detector.
 
+## Installation:
+```
+GO111MODULE=on go get -u github.com/theblackturtle/wildcheck
+```
+
 ## Features
 - Check resolvers are working or not.
 - Check your IP Address is blocked in resolver or not.
