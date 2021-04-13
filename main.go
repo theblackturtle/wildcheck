@@ -8,47 +8,72 @@ import (
     "flag"
     "fmt"
     "io/ioutil"
+    "log"
+    "net"
     "net/http"
     "net/url"
     "os"
     "strings"
     "sync"
+    "syscall"
+    "time"
 
-    "github.com/OWASP/Amass/v3/net/dns"
-    "github.com/OWASP/Amass/v3/requests"
-    amassresolvers "github.com/OWASP/Amass/v3/resolvers"
-    "golang.org/x/net/publicsuffix"
+    "github.com/caffix/resolve"
 )
 
-const AUTHOR = `@thebl4ckturtle - https://github.com/theblackturtle/`
+var DefaultBaselineResolvers = []string{
+    "8.8.8.8",        // Google
+    "1.1.1.1",        // Cloudflare
+    "9.9.9.9",        // Quad9
+    "208.67.222.222", // Cisco OpenDNS
+    "209.244.0.3",    // Level3
+    "64.6.64.6",      // Verisign
+    "84.200.69.80",   // DNS.WATCH
+    "8.26.56.26",     // Comodo Secure DNS
+    "109.69.8.51",    // puntCAT
+    "74.82.42.42",    // Hurricane Electric
+    "77.88.8.8",      // Yandex.DNS
+}
 
-var DefaultResolvers = []string{
-    "1.1.1.1:53",     // Cloudflare
-    "8.8.8.8:53",     // Google
-    "64.6.64.6:53",   // Verisign
-    "77.88.8.8:53",   // Yandex.DNS
-    "74.82.42.42:53", // Hurricane Electric
-    "1.0.0.1:53",     // Cloudflare Secondary
-    "8.8.4.4:53",     // Google Secondary
-    "77.88.8.1:53",   // Yandex.DNS Secondary
+const DefaultQueriesPerPublicResolver = 15
+const DefaultQueriesPerBaselineResolver = 50
+
+var PublicResolvers []string
+
+func init() {
+    addrs := getPublicDNS()
+
+loop:
+    for _, addr := range addrs {
+        for _, baseline := range DefaultBaselineResolvers {
+            if addr == baseline {
+                continue loop
+            }
+        }
+
+        PublicResolvers = append(PublicResolvers, addr)
+    }
 }
 
 func main() {
     var (
         input        string
+        mainDomain   string
+        maxDNSPerSec int
         threads      int
-        publicDNS    bool
-        resolverList string
-        rateMonitor  bool
         verbose      bool
     )
     flag.StringVar(&input, "i", "-", "Subdomains list. Default is stdin")
-    flag.IntVar(&threads, "t", 10, "Threads to use")
-    flag.BoolVar(&publicDNS, "p", false, "Get resolvers from Public-DNS")
-    flag.StringVar(&resolverList, "r", "", "Your resolvers list")
-    flag.BoolVar(&rateMonitor, "m", false, "Enable rate monitor")
+    flag.StringVar(&mainDomain, "d", "", "Main domain")
+    flag.IntVar(&threads, "t", 10, "Threads")
+    flag.IntVar(&maxDNSPerSec, "rate", 20000, "Max DNS Limit per second")
     flag.BoolVar(&verbose, "v", false, "Enable verbose")
     flag.Parse()
+
+    if mainDomain == "" {
+        fmt.Fprintln(os.Stderr, "Main domain is require")
+        os.Exit(1)
+    }
 
     var sc *bufio.Scanner
     if input == "" {
@@ -67,67 +92,26 @@ func main() {
         sc = bufio.NewScanner(subsFile)
     }
 
-    var resolvers []string
-    if publicDNS {
-        resolvers = append(resolvers, getPublicDNS()...)
-    }
-
-    if resolverList != "" {
-        f, err := os.Open(resolverList)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Failed to open resolver file: %s\n", err)
-            os.Exit(1)
-        }
-        sc := bufio.NewScanner(f)
-        for sc.Scan() {
-            line := strings.TrimSpace(sc.Text())
-            if err := sc.Err(); err == nil && line != "" {
-                lineArgs := strings.SplitN(line, ":", 2)
-                switch len(lineArgs) {
-                case 2:
-                    resolvers = append(resolvers, line)
-                case 1:
-                    resolvers = append(resolvers, line+":53")
-                }
-            }
-        }
-    }
-
-    if len(resolvers) == 0 {
-        resolvers = DefaultResolvers
-    }
-
-    resolverPool := amassresolvers.SetupResolverPool(resolvers, 10000, nil)
-    if resolverPool == nil {
-        fmt.Println("Failed to init pool")
+    pool := publicResolverSetup(maxDNSPerSec)
+    if pool == nil {
+        fmt.Fprintln(os.Stderr, "The system was unable to build the pool of resolvers")
         os.Exit(1)
     }
-    fmt.Fprintf(os.Stderr, "Total working resolvers: %d\n", len(resolverPool.Resolvers))
 
     var wg sync.WaitGroup
-    jobChan := make(chan *requests.DNSRequest, threads)
-    ctx := context.Background()
-    defer ctx.Done()
+    jobChan := make(chan string, threads)
 
     for i := 0; i < threads; i++ {
-        wg.Add(1)
         go func() {
-            defer wg.Done()
-            for req := range jobChan {
-                if !resolverPool.MatchesWildcard(ctx, req) {
-                    fmt.Println(req.Name)
-                } else {
-                    if verbose {
-                        fmt.Printf("[wild] %s\n", req.Name)
-                    }
+            for sub := range jobChan {
+                msg := resolve.QueryMsg(sub, 1)
+                if pool.WildcardType(context.Background(), msg, mainDomain) == resolve.WildcardTypeNone {
+                    fmt.Println(sub)
                 }
             }
         }()
     }
-
-    var domainList []string
     for sc.Scan() {
-        var mainDomain string
         line := strings.TrimSpace(sc.Text())
         if strings.HasPrefix(line, "http") {
             u, err := url.Parse(line)
@@ -136,32 +120,12 @@ func main() {
             }
             line = u.Hostname()
         }
-        subDomain := strings.ToLower(dns.RemoveAsteriskLabel(line))
-        subDomain = strings.Trim(subDomain, ".")
+        // subDomain := strings.ToLower(dns.RemoveAsteriskLabel(line))
+        line = strings.Trim(line, ".")
 
-        for _, d := range domainList {
-            if strings.HasSuffix(subDomain, d) || d == subDomain {
-                mainDomain = d
-                break
-            }
-        }
-
-        // Extract main domain from sub domain
-        if mainDomain == "" {
-            mainDomain, err := publicsuffix.EffectiveTLDPlusOne(subDomain)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Failed to get main domain from %s\n", subDomain)
-                continue
-            }
-            domainList = append(domainList, mainDomain)
-        }
-
-        jobChan <- &requests.DNSRequest{
-            Name:   subDomain,
-            Domain: mainDomain,
-        }
-
+        jobChan <- line
     }
+
     close(jobChan)
     wg.Wait()
 }
@@ -216,4 +180,95 @@ func getCountryCode(client *http.Client) string {
 
     json.Unmarshal(body, &ipinfo)
     return strings.ToLower(ipinfo.CountryCode)
+}
+
+func publicResolverSetup(maxDNSQueries int) resolve.Resolver {
+    max := int(float64(GetFileLimit()) * 0.7)
+
+    num := len(PublicResolvers)
+    if num > max {
+        num = max
+    }
+
+    if maxDNSQueries == 0 {
+        maxDNSQueries = num * DefaultQueriesPerPublicResolver
+    } else if maxDNSQueries < num {
+        maxDNSQueries = num
+    }
+
+    var trusted []resolve.Resolver
+    for _, addr := range DefaultBaselineResolvers {
+        if r := resolve.NewBaseResolver(addr, DefaultQueriesPerBaselineResolver, nil); r != nil {
+            trusted = append(trusted, r)
+        }
+    }
+
+    baseline := resolve.NewResolverPool(trusted, time.Second, nil, 1, nil)
+    r := setupResolvers(PublicResolvers, max, DefaultQueriesPerPublicResolver, nil)
+
+    return resolve.NewResolverPool(r, 2*time.Second, baseline, 2, nil)
+}
+
+func setupResolvers(addrs []string, max, rate int, log *log.Logger) []resolve.Resolver {
+    if len(addrs) <= 0 {
+        return nil
+    }
+
+    finished := make(chan resolve.Resolver, 10)
+    for _, addr := range addrs {
+        if _, _, err := net.SplitHostPort(addr); err != nil {
+            // Add the default port number to the IP address
+            addr = net.JoinHostPort(addr, "53")
+        }
+        go func(ip string, ch chan resolve.Resolver) {
+            if err := resolve.ClientSubnetCheck(ip); err == nil {
+                if n := resolve.NewBaseResolver(ip, rate, log); n != nil {
+                    ch <- n
+                }
+            }
+            ch <- nil
+        }(addr, finished)
+    }
+
+    l := len(addrs)
+    var count int
+    var resolvers []resolve.Resolver
+    for i := 0; i < l; i++ {
+        if r := <-finished; r != nil {
+            if count < max {
+                resolvers = append(resolvers, r)
+                count++
+                continue
+            }
+            r.Stop()
+        }
+    }
+
+    if len(resolvers) == 0 {
+        return nil
+    }
+    return resolvers
+}
+
+// GetFileLimit attempts to raise the ulimit to the maximum hard limit and returns that value.
+func GetFileLimit() int {
+    limit := 50000
+
+    var lim syscall.Rlimit
+    if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err == nil {
+        lim.Cur = lim.Max
+        limit = int(lim.Cur)
+
+        if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+            return limit
+        }
+    }
+
+    if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err == nil {
+        if cur := int(lim.Cur); cur < limit {
+            limit = cur
+        }
+    }
+
+    return limit
 }
