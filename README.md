@@ -20,8 +20,6 @@ Usage of wildcheck:
         Max DNS Limit per second (default 20000)
   -t int
         Threads (default 10)
-  -v    Enable verbose
-
 ```
 
 ## Example commands

@@ -61,13 +61,11 @@ func main() {
         mainDomain   string
         maxDNSPerSec int
         threads      int
-        verbose      bool
     )
     flag.StringVar(&input, "i", "-", "Subdomains list. Default is stdin")
     flag.StringVar(&mainDomain, "d", "", "Main domain")
     flag.IntVar(&threads, "t", 10, "Threads")
     flag.IntVar(&maxDNSPerSec, "rate", 20000, "Max DNS Limit per second")
-    flag.BoolVar(&verbose, "v", false, "Enable verbose")
     flag.Parse()
 
     if mainDomain == "" {
