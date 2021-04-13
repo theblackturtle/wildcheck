@@ -103,7 +103,11 @@ func main() {
         go func() {
             for sub := range jobChan {
                 msg := resolve.QueryMsg(sub, 1)
-                if pool.WildcardType(context.Background(), msg, mainDomain) == resolve.WildcardTypeNone {
+                resp, err := pool.Query(context.Background(), msg, resolve.PriorityNormal, nil)
+                if err != nil {
+                    return
+                }
+                if pool.WildcardType(context.Background(), resp, mainDomain) == resolve.WildcardTypeNone {
                     fmt.Println(sub)
                 }
             }
